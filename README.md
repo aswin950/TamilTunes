@@ -1,22 +1,19 @@
 # TamilTunes
 
-TamilTunes is an early-stage SwiftUI iOS music-library prototype.
+A SwiftUI iOS music-library prototype with a dark music-first interface.
 
-## What is in this repository
+## Screens
 
-- SwiftUI app with **Import**, **Playlists & Albums**, **Downloads** and **Offline Library** tabs.
-- Save playlist/album link references without starting downloads.
-- Direct authorized HTTPS file downloads with duplicate prevention for the **exact same URL**.
-- Local audio-file storage and basic AVPlayer playback.
-- `project.yml` for generating an Xcode project using XcodeGen.
-- `.github/workflows/release-ipa.yml` to build an **unsigned IPA** on each published GitHub Release.
+- **Listen:** featured hero, recently imported albums and playlists, offline summary
+- **Library:** album/playlist filters, artwork, collection detail pages and track lists
+- **Import:** real public Apple Music **album** metadata lookup (artwork, titles, artists, durations); reference-only saving for other collection links
+- **Downloads:** direct authorized HTTPS audio-file transfers with same-URL duplicate prevention
+- **Offline:** stored local files with basic AVPlayer playback
 
-## Build and release
+**Limitations:** Spotify/YouTube and Apple Music playlist track fetching are not implemented; saving those links is reference-only. Imported metadata does not include streaming audio. No cross-provider recording matching, full playback queue, audio transcoding, or signed IPA yet.
 
-Read [BUILDING.md](BUILDING.md). Publish a GitHub Release to trigger the build; the workflow attaches `TamilTunes-unsigned.ipa` on success. You can also launch it manually from the Actions tab.
+## CI
 
-**Unsigned IPAs are not installable on an ordinary iPhone.** Secure distribution signing and provisioning are not yet configured. The first CI run has not yet been verified.
+Every push or merge to `main` automatically builds the iOS app and uploads an **unsigned** IPA artifact. Publishing a GitHub Release also attaches the unsigned IPA to that release. See [BUILDING.md](BUILDING.md) and [Actions](https://github.com/aswin950/TamilTunes/actions/workflows/release-ipa.yml).
 
-## Still in development
-
-Apple Music, Spotify and YouTube collection metadata integrations are not connected. Provider audio extraction is not supported. Cross-source deduplication (ISRC/audio fingerprint) is not implemented. The direct URL downloader does not transcode formats. This is a working source-code foundation, not a finished app.
+This repository's source is the canonical app version. Do not treat mockups as real screenshots. Simulator screenshots will be added only after they are captured from a running build.
