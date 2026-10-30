@@ -24,7 +24,7 @@ jobs:
       - name: Compile iOS app
         run: |
           set -o pipefail
-          xcodebuild -project TamilTunes.xcodeproj -scheme TamilTunes -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO build
+          xcodebuild -project TamilTunes.xcodeproj -scheme TamilTunes -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO SPOTIFY_CLIENT_ID="${{ vars.SPOTIFY_CLIENT_ID }}" build
       - name: Package unsigned IPA for testing
         run: |
           set -euo pipefail
