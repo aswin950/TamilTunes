@@ -15,6 +15,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tamiltunes.app
         GENERATE_INFOPLIST_FILE: YES
+        SPOTIFY_CLIENT_ID: ''
+        INFOPLIST_KEY_SpotifyClientID: '$(SPOTIFY_CLIENT_ID)'
+        INFOPLIST_KEY_CFBundleURLTypes: ''
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         TARGETED_DEVICE_FAMILY: '1,2'
         INFOPLIST_KEY_CFBundleDisplayName: TamilTunes
