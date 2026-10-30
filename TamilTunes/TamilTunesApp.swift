@@ -161,6 +161,19 @@ final class MusicStore: ObservableObject {
         refreshFiles()
     }
 
+    private let trackSourceKey = "TamilTunes.trackSources.v1"
+    func rememberedAudioSource(for track: LibraryTrack) -> String? {
+        (UserDefaults.standard.dictionary(forKey: trackSourceKey) as? [String: String])?[track.id.uuidString]
+    }
+    func quickDownload(_ track: LibraryTrack) {
+        if fileForTrack(track) != nil {
+            notice = "This song is already available offline."
+        } else if let source = rememberedAudioSource(for: track) {
+            downloadAuthorizedAudio(source, for: track)
+        } else {
+            notice = "Add an authorized direct audio link once to enable one-tap downloads."
+        }
+    }
     private let trackFileKey = "TamilTunes.trackFiles.v1"
 
     private func trackFileMap() -> [String: String] {
@@ -221,6 +234,9 @@ final class MusicStore: ObservableObject {
             notice = "Provide a direct HTTPS audio-file URL you are authorized to download."
             return
         }
+        var sources = UserDefaults.standard.dictionary(forKey: trackSourceKey) as? [String: String] ?? [:]
+        sources[track.id.uuidString] = url.absoluteString
+        UserDefaults.standard.set(sources, forKey: trackSourceKey)
         let identity = url.absoluteString
         if let existing = readIndex()[identity],
            FileManager.default.fileExists(atPath: localURL(for: existing).path) {
@@ -869,13 +885,24 @@ struct CollectionPage: View {
                                 Text(track.artist).font(.caption).foregroundStyle(TuneStyle.muted)
                             }
                             Spacer(minLength: 4)
-                            if store.fileForTrack(track) != nil {
-                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                            } else {
-                                Image(systemName: "arrow.down.circle").foregroundStyle(TuneStyle.accent)
-                            }
                         }.frame(minHeight: 48).contentShape(Rectangle())
                     }.buttonStyle(.plain)
+                    Button {
+                        if store.fileForTrack(track) == nil && store.rememberedAudioSource(for: track) == nil {
+                            selectedTrack = track
+                            audioLink = ""
+                            showingURLSheet = true
+                        } else {
+                            store.quickDownload(track)
+                        }
+                    } label: {
+                        Image(systemName: store.fileForTrack(track) != nil ? "checkmark.circle.fill" : "arrow.down.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(store.fileForTrack(track) != nil ? .green : TuneStyle.accent)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Quick download")
                     Divider().overlay(.white.opacity(0.06))
                 }
             }.padding(20).frame(maxWidth: .infinity)
