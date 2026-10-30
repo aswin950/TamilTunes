@@ -234,6 +234,36 @@ final class SpotifyImporter: NSObject, ObservableObject, ASWebAuthenticationPres
         UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }.first(where: { $0.isKeyWindow }) ?? ASPresentationAnchor()
     }
+    func previewPublicLink(_ link: String) async {
+        guard let url = URL(string: link),
+              url.scheme == "https",
+              url.host?.lowercased() == "open.spotify.com",
+              let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path.split(separator: "/"),
+              path.count >= 2,
+              ["playlist", "album"].contains(String(path[0])) else {
+            message = "Paste a public Spotify playlist or album URL from open.spotify.com."
+            return
+        }
+        busy = true
+        defer { busy = false }
+        do {
+            var endpoint = URLComponents(string: "https://open.spotify.com/oembed")!
+            endpoint.queryItems = [URLQueryItem(name: "url", value: link)]
+            let (data, response) = try await URLSession.shared.data(from: endpoint.url!)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                message = "Spotify couldn't provide a public preview for this link."
+                return
+            }
+            let preview = try JSONDecoder().decode(SpotifyOEmbed.self, from: data)
+            let collection = MusicCollection(name: preview.title, source: "Spotify",
+                kind: path[0] == "album" ? "Album" : "Playlist",
+                url: link, tracks: [], artworkURL: preview.thumbnail_url, artist: nil)
+            MusicStore.shared.upsertImportedCollection(collection)
+            message = "Added Spotify \(collection.kind.lowercased()) preview to Library. Spotify's public preview does not include a song list. For eligible playlists, use Sign in & import tracks."
+        } catch {
+            message = "Couldn't load Spotify preview: \(error.localizedDescription)"
+        }
+    }
     func importPlaylist(_ link: String) async {
         guard !clientID.isEmpty else {
             message = "Spotify sign-in is not configured in this build yet. Please contact the app developer."
@@ -336,6 +366,7 @@ final class SpotifyImporter: NSObject, ObservableObject, ASWebAuthenticationPres
     }
 }
 enum SpotifyImportError: Error { case invalidResponse }
+struct SpotifyOEmbed: Decodable { let title: String; let thumbnail_url: String? }
 struct SpotifyToken: Decodable { let access_token: String }
 struct SpotifyImage: Decodable { let url: String }
 struct SpotifyOwner: Decodable { let display_name: String? }
@@ -551,18 +582,18 @@ struct ImportScreen: View {
                     }.padding(18).background(TuneStyle.panel, in: RoundedRectangle(cornerRadius: 22))
 
                     Button {
-                        Task { await spotify.importPlaylist(link.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                        Task { await spotify.previewPublicLink(link.trimmingCharacters(in: .whitespacesAndNewlines)) }
                     } label: {
                         HStack {
                             if spotify.busy { ProgressView().tint(.white) }
                             else { Image(systemName: "music.note.list") }
-                            Text(spotify.busy ? "Importing Spotify playlist…" : "Import Spotify playlist")
+                            Text(spotify.busy ? "Loading Spotify preview…" : "Add Spotify link without sign-in")
                         }.font(.headline).frame(maxWidth: .infinity).padding(16)
                     }
                     .disabled(spotify.busy)
                     .background(Color(red: 0.10, green: 0.60, blue: 0.34), in: RoundedRectangle(cornerRadius: 15))
                     .foregroundStyle(.white)
-                    Text("Spotify sign-in required. Imports playlist metadata only.")
+                    Text("Adds the public title and artwork. Spotify does not provide the full track list through its login-free preview API.")
                         .font(.footnote).foregroundStyle(TuneStyle.muted)
                     VStack(alignment: .leading, spacing: 12) {
                         Label("How to add music", systemImage: "info.circle.fill")
@@ -570,12 +601,12 @@ struct ImportScreen: View {
                         Text("1. Copy an album link from Apple Music or a playlist link from Spotify.")
                         Text("2. Paste the link above and tap its Import button.")
                         Text("3. For Spotify, sign in to your Spotify account when prompted.")
-                        Text("4. The album or playlist, artwork and available track details are added to your Library.")
+                        Text("4. The available metadata is added to Library. Spotify previews do not include songs.")
                         Divider().overlay(.white.opacity(0.08))
                         Text("SUPPORTED NOW").font(.caption.bold())
                             .tracking(1).foregroundStyle(TuneStyle.accent)
                         Text("Apple Music: public albums")
-                        Text("Spotify: playlists (Spotify sign-in; app integration must be configured)")
+                        Text("Spotify: public playlist/album previews without sign-in; eligible playlist tracks with sign-in")
                         Text("YouTube and other playlist imports are not supported yet.")
                         Text("Importing saves metadata only. It never downloads streaming audio.")
                             .foregroundStyle(TuneStyle.muted)
@@ -585,6 +616,19 @@ struct ImportScreen: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(18)
                     .background(TuneStyle.panel, in: RoundedRectangle(cornerRadius: 20))
+
+                    Button {
+                        Task { await spotify.importPlaylist(link.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                    } label: {
+                        Label("Sign in to Spotify & import tracks", systemImage: "person.crop.circle")
+                            .font(.subheadline.bold())
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .disabled(spotify.busy)
+                    .buttonStyle(.bordered)
+                    .tint(.green)
+                    Text("Track import requires TamilTunes' Spotify integration to be configured and a playlist you own or collaborate on.")
+                        .font(.footnote).foregroundStyle(TuneStyle.muted)
 
                     SectionHeading(title: "Direct audio download", subtitle: "For permitted HTTPS audio file URLs")
                     Button { store.download(url: link) } label: {
