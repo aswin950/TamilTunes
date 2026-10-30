@@ -10,7 +10,7 @@ A SwiftUI iOS music-library prototype with a dark music-first interface.
 - **Downloads:** direct authorized HTTPS audio-file transfers with same-URL duplicate prevention
 - **Offline:** stored local files with basic AVPlayer playback
 
-**Limitations:** YouTube and Apple Music playlist track fetching are not implemented; saving those links is reference-only. Imported metadata does not include streaming audio. No cross-provider recording matching, full playback queue, audio transcoding, or signed IPA yet.
+**Apple Music offline audio:** Open an imported album, tap a track, and choose an owned audio file from Files or enter an authorized direct HTTPS audio URL. Downloaded audio is linked to the track; identical imported files are deduplicated by SHA-256. This does not download Apple Music subscription audio. Direct URL transfers currently deduplicate by URL and have no per-byte progress display.\n\n**Limitations:** YouTube and Apple Music playlist track fetching are not implemented; saving those links is reference-only. Imported metadata does not include streaming audio. No cross-provider recording matching, full playback queue, audio transcoding, or signed IPA yet.
 
 ## CI
 
