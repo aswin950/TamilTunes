@@ -236,7 +236,7 @@ final class SpotifyImporter: NSObject, ObservableObject, ASWebAuthenticationPres
     }
     func importPlaylist(_ link: String) async {
         guard !clientID.isEmpty else {
-            message = "Spotify setup needed: configure SpotifyClientID in project.yml and register tamiltunes://spotify-callback in the Spotify developer dashboard."
+            message = "Spotify sign-in is not configured in this build yet. Please contact the app developer."
             return
         }
         guard let url = URL(string: link),
@@ -522,11 +522,6 @@ struct ImportScreen: View {
     @ObservedObject private var store = MusicStore.shared
     @ObservedObject private var spotify = SpotifyImporter.shared
     @State private var link = ""
-    @State private var name = ""
-    @State private var source = "Apple Music"
-    @State private var kind = "Playlist"
-    private let sources = ["Apple Music", "Spotify", "YouTube", "Direct link"]
-
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -535,7 +530,7 @@ struct ImportScreen: View {
                     VStack(alignment: .leading, spacing: 14) {
                         Label("MUSIC LINK", systemImage: "link").font(.caption.bold())
                             .tracking(1).foregroundStyle(TuneStyle.muted)
-                        TextField("Paste Apple Music, Spotify or YouTube URL", text: $link)
+                        TextField("Paste Apple Music album or Spotify playlist URL", text: $link)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .keyboardType(.URL).padding(16)
                             .background(TuneStyle.background, in: RoundedRectangle(cornerRadius: 14))
@@ -569,24 +564,27 @@ struct ImportScreen: View {
                     .foregroundStyle(.white)
                     Text("Spotify sign-in required. Imports playlist metadata only.")
                         .font(.footnote).foregroundStyle(TuneStyle.muted)
-                    SectionHeading(title: "Save another collection", subtitle: "Other links can be saved as references")
-                    VStack(spacing: 14) {
-                        TextField("Collection name", text: $name)
-                            .padding(14).background(TuneStyle.background, in: RoundedRectangle(cornerRadius: 12))
-                        Picker("Source", selection: $source) {
-                            ForEach(sources, id: \.self) { Text($0) }
-                        }
-                        Picker("Collection type", selection: $kind) {
-                            Text("Playlist").tag("Playlist")
-                            Text("Album").tag("Album")
-                        }.pickerStyle(.segmented)
-                        Button {
-                            store.saveCollection(name: name, source: source, kind: kind, url: link)
-                        } label: {
-                            Label("Save reference", systemImage: "bookmark")
-                                .frame(maxWidth: .infinity).padding(13)
-                        }.buttonStyle(.borderedProminent).tint(.white.opacity(0.17))
-                    }.padding(18).background(TuneStyle.panel, in: RoundedRectangle(cornerRadius: 22))
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("How to add music", systemImage: "info.circle.fill")
+                            .font(.headline).foregroundStyle(.white)
+                        Text("1. Copy an album link from Apple Music or a playlist link from Spotify.")
+                        Text("2. Paste the link above and tap its Import button.")
+                        Text("3. For Spotify, sign in to your Spotify account when prompted.")
+                        Text("4. The album or playlist, artwork and available track details are added to your Library.")
+                        Divider().overlay(.white.opacity(0.08))
+                        Text("SUPPORTED NOW").font(.caption.bold())
+                            .tracking(1).foregroundStyle(TuneStyle.accent)
+                        Text("Apple Music: public albums")
+                        Text("Spotify: playlists (Spotify sign-in; app integration must be configured)")
+                        Text("YouTube and other playlist imports are not supported yet.")
+                        Text("Importing saves metadata only. It never downloads streaming audio.")
+                            .foregroundStyle(TuneStyle.muted)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(TuneStyle.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(18)
+                    .background(TuneStyle.panel, in: RoundedRectangle(cornerRadius: 20))
 
                     SectionHeading(title: "Direct audio download", subtitle: "For permitted HTTPS audio file URLs")
                     Button { store.download(url: link) } label: {
