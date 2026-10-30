@@ -71,7 +71,7 @@ final class PipedDiscovery: ObservableObject {
             let decoded = try JSONDecoder().decode(PipedSearchResponse.self, from: data)
             results = decoded.items.filter { $0.url?.hasPrefix("/watch?v=") == true }.prefix(12).map { $0 }
             if results.isEmpty { error = "No matching videos found on this Piped instance." }
-        } catch { error = "Piped search unavailable: \(error.localizedDescription)" }
+        } catch { self.error = "Piped search unavailable: \(error.localizedDescription)" }
     }
 }
 
