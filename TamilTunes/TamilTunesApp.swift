@@ -2,6 +2,7 @@ import SwiftUI
 import AVFoundation
 import AuthenticationServices
 import CryptoKit
+import UniformTypeIdentifiers
 
 @main
 struct TamilTunesApp: App {
