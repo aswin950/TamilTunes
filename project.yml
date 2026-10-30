@@ -1,0 +1,26 @@
+name: TamilTunes
+options:
+  bundleIdPrefix: com.tamiltunes
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+targets:
+  TamilTunes:
+    type: application
+    platform: iOS
+    deploymentTarget: '17.0'
+    sources:
+      - path: TamilTunes
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tamiltunes.app
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_CFBundleDisplayName: TamilTunes
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_EMIT_LOC_STRINGS: YES
+schemes:
+  TamilTunes:
+    build:
+      targets:
+        TamilTunes: all
