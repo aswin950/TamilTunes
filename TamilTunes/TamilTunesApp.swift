@@ -171,7 +171,7 @@ final class MusicStore: ObservableObject {
         } else if let source = rememberedAudioSource(for: track) {
             downloadAuthorizedAudio(source, for: track)
         } else {
-            notice = "Add an authorized direct audio link once to enable one-tap downloads."
+            notice = "No authorized audio source is available for automatic download. Add a direct URL or an owned audio file first."
         }
     }
     private let trackFileKey = "TamilTunes.trackFiles.v1"
@@ -887,22 +887,7 @@ struct CollectionPage: View {
                             Spacer(minLength: 4)
                         }.frame(minHeight: 48).contentShape(Rectangle())
                     }.buttonStyle(.plain)
-                    Button {
-                        if store.fileForTrack(track) == nil && store.rememberedAudioSource(for: track) == nil {
-                            selectedTrack = track
-                            audioLink = ""
-                            showingURLSheet = true
-                        } else {
-                            store.quickDownload(track)
-                        }
-                    } label: {
-                        Image(systemName: store.fileForTrack(track) != nil ? "checkmark.circle.fill" : "arrow.down.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(store.fileForTrack(track) != nil ? .green : TuneStyle.accent)
-                            .frame(width: 44, height: 44)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Quick download")
+
                     Divider().overlay(.white.opacity(0.06))
                 }
             }.padding(20).frame(maxWidth: .infinity)
@@ -919,6 +904,10 @@ struct CollectionPage: View {
                         playingFile = SelectedAudio(name: filename)
                         selectedTrack = nil
                     }
+                }
+                Button("Download") {
+                    store.quickDownload(track)
+                    selectedTrack = nil
                 }
                 Button("Choose audio file from Files") {
                     showingFilePicker = true
