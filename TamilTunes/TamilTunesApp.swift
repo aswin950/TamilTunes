@@ -258,6 +258,10 @@ final class SpotifyImporter: NSObject, ObservableObject, ASWebAuthenticationPres
             let collection = MusicCollection(name: preview.title, source: "Spotify",
                 kind: path[0] == "album" ? "Album" : "Playlist",
                 url: link, tracks: [], artworkURL: preview.thumbnail_url, artist: nil)
+            if MusicStore.shared.collections.contains(where: { $0.url == link && !$0.tracks.isEmpty }) {
+                message = "This Spotify collection already has imported tracks in your Library."
+                return
+            }
             MusicStore.shared.upsertImportedCollection(collection)
             message = "Added Spotify \(collection.kind.lowercased()) preview to Library. Spotify's public preview does not include a song list. For eligible playlists, use Sign in & import tracks."
         } catch {
