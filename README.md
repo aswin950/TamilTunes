@@ -14,6 +14,6 @@ A SwiftUI iOS music-library prototype with a dark music-first interface.
 
 ## CI
 
-Every push or merge to `main` automatically builds the iOS app and uploads an **unsigned** IPA artifact. Publishing a GitHub Release also attaches the unsigned IPA to that release. See [BUILDING.md](BUILDING.md) and [Actions](https://github.com/aswin950/TamilTunes/actions/workflows/release-ipa.yml).
+Every push or merge to `main` automatically builds the iOS app and publishes a **GitHub prerelease** with an **unsigned** IPA asset when the build succeeds. Manual workflow runs do the same. Releases are generated automatically; no manual release publishing is required. See [BUILDING.md](BUILDING.md) and [Actions](https://github.com/aswin950/TamilTunes/actions/workflows/release-ipa.yml).
 
 This repository's source is the canonical app version. Do not treat mockups as real screenshots. Simulator screenshots will be added only after they are captured from a running build.
