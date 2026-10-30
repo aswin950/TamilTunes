@@ -11,16 +11,21 @@ targets:
     deploymentTarget: '17.0'
     sources:
       - path: TamilTunes
+    info:
+      path: TamilTunes/Info.plist
+      properties:
+        CFBundleDisplayName: TamilTunes
+        SpotifyClientID: "$(SPOTIFY_CLIENT_ID)"
+        CFBundleURLTypes:
+          - CFBundleURLName: com.tamiltunes.spotify
+            CFBundleURLSchemes:
+              - tamiltunes
+        UILaunchScreen: {}
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tamiltunes.app
-        GENERATE_INFOPLIST_FILE: YES
         SPOTIFY_CLIENT_ID: ''
-        INFOPLIST_KEY_SpotifyClientID: '$(SPOTIFY_CLIENT_ID)'
-        INFOPLIST_KEY_CFBundleURLTypes: ''
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         TARGETED_DEVICE_FAMILY: '1,2'
-        INFOPLIST_KEY_CFBundleDisplayName: TamilTunes
         CODE_SIGN_STYLE: Automatic
         SWIFT_EMIT_LOC_STRINGS: YES
 schemes:
