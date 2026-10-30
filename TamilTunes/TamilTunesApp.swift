@@ -1,5 +1,7 @@
 import SwiftUI
 import AVFoundation
+import AuthenticationServices
+import CryptoKit
 
 @main
 struct TamilTunesApp: App {
@@ -113,6 +115,12 @@ final class MusicStore: ObservableObject {
         }
     }
 
+    func upsertImportedCollection(_ collection: MusicCollection) {
+        collections.removeAll { $0.url == collection.url }
+        collections.insert(collection, at: 0)
+        persistCollections()
+    }
+
     func removeCollections(at offsets: IndexSet) {
         collections.remove(atOffsets: offsets)
         persistCollections()
@@ -209,6 +217,149 @@ final class MusicStore: ObservableObject {
             downloads[offset].state = error ?? "Failed"
         }
     }
+}
+
+
+@MainActor
+final class SpotifyImporter: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
+    static let shared = SpotifyImporter()
+    @Published var busy = false
+    @Published var message: String?
+    private var session: ASWebAuthenticationSession?
+    private let redirect = "tamiltunes://spotify-callback"
+    private var clientID: String {
+        Bundle.main.object(forInfoDictionaryKey: "SpotifyClientID") as? String ?? ""
+    }
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }.first(where: { $0.isKeyWindow }) ?? ASPresentationAnchor()
+    }
+    func importPlaylist(_ link: String) async {
+        guard !clientID.isEmpty else {
+            message = "Spotify setup needed: configure SpotifyClientID in project.yml and register tamiltunes://spotify-callback in the Spotify developer dashboard."
+            return
+        }
+        guard let url = URL(string: link),
+              url.host?.lowercased() == "open.spotify.com",
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path.split(separator: "/"),
+              let index = parts.firstIndex(of: "playlist"), parts.indices.contains(index + 1) else {
+            message = "Paste a Spotify playlist link from open.spotify.com."
+            return
+        }
+        let playlistID = String(parts[index + 1])
+        busy = true
+        defer { busy = false }
+        do {
+            let token = try await authenticate()
+            let info: SpotifyPlaylistInfo = try await request("https://api.spotify.com/v1/playlists/\(playlistID)", token: token)
+            var tracks: [LibraryTrack] = []
+            var next: String? = "https://api.spotify.com/v1/playlists/\(playlistID)/items?limit=50"
+            var pages = 0
+            while let pageURL = next, pages < 100 {
+                let page: SpotifyPlaylistItems = try await request(pageURL, token: token)
+                for entry in page.items {
+                    guard let item = entry.item ?? entry.track, item.type == "track" else { continue }
+                    tracks.append(LibraryTrack(title: item.name, url: item.external_urls?.spotify ?? "",
+                        artist: item.artists?.map(\.name).joined(separator: ", ") ?? "",
+                        duration: (item.duration_ms ?? 0) / 1000))
+                }
+                next = page.next
+                pages += 1
+            }
+            let collection = MusicCollection(name: info.name, source: "Spotify", kind: "Playlist",
+                url: link, tracks: tracks, artworkURL: info.images?.first?.url,
+                artist: info.owner?.display_name)
+            MusicStore.shared.upsertImportedCollection(collection)
+            message = "Imported \(tracks.count) Spotify playlist tracks. Audio was not downloaded."
+        } catch {
+            message = "Spotify import failed: \(error.localizedDescription)"
+        }
+    }
+    private func authenticate() async throws -> String {
+        let verifier = (0..<64).map { _ in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~".randomElement()! }
+            .reduce(into: "") { $0.append($1) }
+        let digest = SHA256.hash(data: Data(verifier.utf8))
+        let challenge = Data(digest).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let state = UUID().uuidString
+        var components = URLComponents(string: "https://accounts.spotify.com/authorize")!
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: clientID),
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "redirect_uri", value: redirect),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "scope", value: "playlist-read-private playlist-read-collaborative")
+        ]
+        let callback = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            let session = ASWebAuthenticationSession(url: components.url!, callbackURLScheme: "tamiltunes") { url, error in
+                if let url { continuation.resume(returning: url) }
+                else { continuation.resume(throwing: error ?? SpotifyImportError.invalidResponse) }
+            }
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = false
+            self.session = session
+            if !session.start() { continuation.resume(throwing: SpotifyImportError.invalidResponse) }
+        }
+        let values = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard values.first(where: { $0.name == "state" })?.value == state,
+              let code = values.first(where: { $0.name == "code" })?.value else {
+            throw SpotifyImportError.invalidResponse
+        }
+        var request = URLRequest(url: URL(string: "https://accounts.spotify.com/api/token")!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let body = [
+            URLQueryItem(name: "grant_type", value: "authorization_code"),
+            URLQueryItem(name: "client_id", value: clientID),
+            URLQueryItem(name: "code", value: code),
+            URLQueryItem(name: "redirect_uri", value: redirect),
+            URLQueryItem(name: "code_verifier", value: verifier)
+        ]
+        var encoded = URLComponents()
+        encoded.queryItems = body
+        request.httpBody = Data((encoded.percentEncodedQuery ?? "").utf8)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw SpotifyImportError.invalidResponse }
+        return try JSONDecoder().decode(SpotifyToken.self, from: data).access_token
+    }
+    private func request<T: Decodable>(_ url: String, token: String) async throws -> T {
+        guard let address = URL(string: url), address.scheme == "https",
+              address.host == "api.spotify.com" else { throw SpotifyImportError.invalidResponse }
+        var request = URLRequest(url: address)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw SpotifyImportError.invalidResponse }
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+}
+enum SpotifyImportError: Error { case invalidResponse }
+struct SpotifyToken: Decodable { let access_token: String }
+struct SpotifyImage: Decodable { let url: String }
+struct SpotifyOwner: Decodable { let display_name: String? }
+struct SpotifyPlaylistInfo: Decodable {
+    let name: String
+    let images: [SpotifyImage]?
+    let owner: SpotifyOwner?
+}
+struct SpotifyArtist: Decodable { let name: String }
+struct SpotifyExternal: Decodable { let spotify: String? }
+struct SpotifyTrack: Decodable {
+    let type: String?
+    let name: String
+    let artists: [SpotifyArtist]?
+    let duration_ms: Int?
+    let external_urls: SpotifyExternal?
+}
+struct SpotifyPlaylistEntry: Decodable {
+    let item: SpotifyTrack?
+    let track: SpotifyTrack?
+}
+struct SpotifyPlaylistItems: Decodable {
+    let items: [SpotifyPlaylistEntry]
+    let next: String?
 }
 
 struct ITunesLookup: Decodable {
@@ -369,6 +520,7 @@ struct HomeScreen: View {
 
 struct ImportScreen: View {
     @ObservedObject private var store = MusicStore.shared
+    @ObservedObject private var spotify = SpotifyImporter.shared
     @State private var link = ""
     @State private var name = ""
     @State private var source = "Apple Music"
@@ -403,7 +555,21 @@ struct ImportScreen: View {
                             .font(.footnote).foregroundStyle(TuneStyle.muted)
                     }.padding(18).background(TuneStyle.panel, in: RoundedRectangle(cornerRadius: 22))
 
-                    SectionHeading(title: "Save another collection", subtitle: "Spotify, YouTube and playlist links: reference only for now")
+                    Button {
+                        Task { await spotify.importPlaylist(link.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                    } label: {
+                        HStack {
+                            if spotify.busy { ProgressView().tint(.white) }
+                            else { Image(systemName: "music.note.list") }
+                            Text(spotify.busy ? "Importing Spotify playlist…" : "Import Spotify playlist")
+                        }.font(.headline).frame(maxWidth: .infinity).padding(16)
+                    }
+                    .disabled(spotify.busy)
+                    .background(Color(red: 0.10, green: 0.60, blue: 0.34), in: RoundedRectangle(cornerRadius: 15))
+                    .foregroundStyle(.white)
+                    Text("Spotify sign-in required. Imports playlist metadata only.")
+                        .font(.footnote).foregroundStyle(TuneStyle.muted)
+                    SectionHeading(title: "Save another collection", subtitle: "Other links can be saved as references")
                     VStack(spacing: 14) {
                         TextField("Collection name", text: $name)
                             .padding(14).background(TuneStyle.background, in: RoundedRectangle(cornerRadius: 12))
@@ -432,6 +598,12 @@ struct ImportScreen: View {
                 }.padding(20)
             }.background(TuneStyle.background)
                 .navigationTitle("Import").navigationBarTitleDisplayMode(.large)
+                .alert("Spotify", isPresented: Binding(
+                    get: { spotify.message != nil },
+                    set: { if !$0 { spotify.message = nil } }
+                )) {
+                    Button("OK", role: .cancel) { spotify.message = nil }
+                } message: { Text(spotify.message ?? "") }
                 .alert("TamilTunes", isPresented: Binding(
                     get: { store.notice != nil },
                     set: { if !$0 { store.notice = nil } }
