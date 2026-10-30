@@ -238,7 +238,6 @@ struct RootView: View {
             CollectionsScreen().tabItem { Label("Library", systemImage: "square.stack.fill") }
             ImportScreen().tabItem { Label("Import", systemImage: "plus.circle.fill") }
             DownloadsScreen().tabItem { Label("Downloads", systemImage: "arrow.down.circle.fill") }
-            OfflineScreen().tabItem { Label("Offline", systemImage: "music.note") }
         }
         .tint(TuneStyle.accent)
         .preferredColorScheme(.dark)
@@ -454,11 +453,28 @@ struct CollectionsScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     SectionHeading(title: "Your collection", subtitle: "Albums and playlists, beautifully organized")
-                    HStack(spacing: 10) {
+                    NavigationLink(destination: OfflineScreen()) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "arrow.down.to.line.compact").font(.title2)
+                                .foregroundStyle(TuneStyle.accent)
+                                .frame(width: 44, height: 44)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Offline music").font(.headline)
+                                Text("Browse downloaded files").font(.caption)
+                                    .foregroundStyle(TuneStyle.muted)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(TuneStyle.muted)
+                        }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(TuneStyle.panel, in: RoundedRectangle(cornerRadius: 16))
+                    }.buttonStyle(.plain)
+                    HStack(spacing: 8) {
                         ForEach(["All", "Album", "Playlist"], id: \.self) { value in
                             Button(value == "All" ? "All" : value + "s") { filter = value }
                                 .font(.subheadline.bold())
-                                .padding(.horizontal, 18).padding(.vertical, 10)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                                .frame(maxWidth: .infinity, minHeight: 44)
                                 .background(filter == value ? TuneStyle.accent : TuneStyle.panel,
                                             in: Capsule())
                         }
