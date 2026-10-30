@@ -6,7 +6,7 @@ A SwiftUI iOS music-library prototype with a dark music-first interface.
 
 - **Listen:** featured hero, recently imported albums and playlists, offline summary
 - **Library:** album/playlist filters, artwork, collection detail pages and track lists
-- **Import:** real public Apple Music **album** metadata lookup (artwork, titles, artists, durations); Spotify playlist metadata import via OAuth PKCE (requires Spotify Client ID), and reference-only saving for other links
+- **Import:** real public Apple Music **album** metadata lookup (artwork, titles, artists, durations); login-free Spotify playlist/album previews via oEmbed, optional Spotify playlist track import via OAuth PKCE (requires app-owned Spotify Client ID)
 - **Downloads:** direct authorized HTTPS audio-file transfers with same-URL duplicate prevention
 - **Offline:** stored local files with basic AVPlayer playback
 
@@ -28,3 +28,7 @@ This repository's source is the canonical app version. Do not treat mockups as r
 Spotify authentication uses Authorization Code with PKCE. The implementation does not persist access tokens; it requests authorization for each import. Spotify audio downloading is not supported.
 
 **Verification:** The Spotify import flow has not been exercised against a configured Spotify developer app; inspect the GitHub Actions build before relying on it.
+
+## Spotify without sign-in
+
+Paste a public `https://open.spotify.com/playlist/...` or `https://open.spotify.com/album/...` URL and tap **Add Spotify link without sign-in**. TamilTunes uses Spotify's public oEmbed endpoint to import the link title and artwork. **This is a preview, not a track-list import**: oEmbed does not expose playlist songs. The app shows zero tracks rather than inventing them. For playlists the signed-in user owns or collaborates on, **Sign in to Spotify & import tracks** is an optional authenticated path requiring the app developer's Spotify Client ID. The preview path does not require this ID.
