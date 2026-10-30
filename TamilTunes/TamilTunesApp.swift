@@ -160,6 +160,109 @@ final class MusicStore: ObservableObject {
         refreshFiles()
     }
 
+    private let trackFileKey = "TamilTunes.trackFiles.v1"
+
+    private func trackFileMap() -> [String: String] {
+        UserDefaults.standard.dictionary(forKey: trackFileKey) as? [String: String] ?? [:]
+    }
+
+    func fileForTrack(_ track: LibraryTrack) -> String? {
+        guard let filename = trackFileMap()[track.id.uuidString],
+              FileManager.default.fileExists(atPath: localURL(for: filename).path) else { return nil }
+        return filename
+    }
+
+    private func linkTrack(_ track: LibraryTrack, filename: String) {
+        var map = trackFileMap()
+        map[track.id.uuidString] = filename
+        UserDefaults.standard.set(map, forKey: trackFileKey)
+        refreshFiles()
+    }
+
+    func importOwnedAudio(_ source: URL, for track: LibraryTrack) {
+        let granted = source.startAccessingSecurityScopedResource()
+        defer { if granted { source.stopAccessingSecurityScopedResource() } }
+        do {
+            let extensionName = source.pathExtension.lowercased()
+            guard ["mp3", "m4a", "aac", "flac", "wav", "aiff", "alac", "caf"].contains(extensionName) else {
+                notice = "Choose a supported audio file, not a playlist or streaming link."
+                return
+            }
+            let data = try Data(contentsOf: source)
+            guard !data.isEmpty else { notice = "The selected file is empty."; return }
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let identity = "sha256:" + digest
+            if let existing = readIndex()[identity],
+               FileManager.default.fileExists(atPath: localURL(for: existing).path) {
+                linkTrack(track, filename: existing)
+                notice = "Matched an existing offline file. No duplicate was created."
+                return
+            }
+            let filename = digest + "." + extensionName
+            try data.write(to: localURL(for: filename), options: .atomic)
+            var index = readIndex()
+            index[identity] = filename
+            writeIndex(index)
+            linkTrack(track, filename: filename)
+            notice = "Added your audio file to the offline library for \(track.title)."
+        } catch {
+            notice = "Couldn't import audio: \(error.localizedDescription)"
+        }
+    }
+
+    func downloadAuthorizedAudio(_ link: String, for track: LibraryTrack) {
+        guard let url = URL(string: link),
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              !["music.apple.com", "open.spotify.com", "spotify.com", "youtube.com", "youtu.be"].contains(host),
+              !host.hasSuffix(".youtube.com"), !host.hasSuffix(".spotify.com"),
+              ["mp3", "m4a", "aac", "flac", "wav", "aiff", "caf"].contains(url.pathExtension.lowercased()) else {
+            notice = "Provide a direct HTTPS audio-file URL you are authorized to download."
+            return
+        }
+        let identity = url.absoluteString
+        if let existing = readIndex()[identity],
+           FileManager.default.fileExists(atPath: localURL(for: existing).path) {
+            linkTrack(track, filename: existing)
+            notice = "Linked the existing offline file to \(track.title)."
+            return
+        }
+        if activeTasks[identity] != nil {
+            notice = "This audio file is already downloading."
+            return
+        }
+        let id = UUID()
+        downloads.insert(DownloadItem(id: id, title: track.title, url: identity, state: "Downloading"), at: 0)
+        let task = URLSession.shared.downloadTask(with: url) { [weak self] temporary, response, error in
+            guard let temporary, error == nil, let response = response as? HTTPURLResponse,
+                  (200...299).contains(response.statusCode),
+                  (response.mimeType?.hasPrefix("audio/") == true ||
+                   response.mimeType == "application/octet-stream") else {
+                Task { @MainActor in
+                    self?.complete(id: id, identity: identity, filename: nil,
+                                   error: error?.localizedDescription ?? "Server did not return an audio file")
+                }
+                return
+            }
+            let filename = id.uuidString + "." + url.pathExtension.lowercased()
+            let destination = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent(filename)
+            do {
+                try FileManager.default.moveItem(at: temporary, to: destination)
+                Task { @MainActor in
+                    self?.complete(id: id, identity: identity, filename: filename, error: nil)
+                    self?.linkTrack(track, filename: filename)
+                }
+            } catch {
+                Task { @MainActor in
+                    self?.complete(id: id, identity: identity, filename: nil, error: error.localizedDescription)
+                }
+            }
+        }
+        activeTasks[identity] = task
+        task.resume()
+    }
+
     func download(url string: String) {
         guard let url = URL(string: string), url.scheme?.lowercased() == "https",
               let host = url.host?.lowercased(),
@@ -732,40 +835,115 @@ struct CollectionsScreen: View {
 
 struct CollectionPage: View {
     let collection: MusicCollection
+    @ObservedObject private var store = MusicStore.shared
+    @State private var selectedTrack: LibraryTrack?
+    @State private var showingFilePicker = false
+    @State private var showingURLSheet = false
+    @State private var audioLink = ""
+    @State private var playingFile: SelectedAudio?
+
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
-                CoverArt(url: collection.artworkURL, size: 230)
-                    .shadow(color: .black.opacity(0.4), radius: 24, y: 15)
+                CoverArt(url: collection.artworkURL, size: 210)
+                    .shadow(color: .black.opacity(0.4), radius: 20, y: 12)
                 Text(collection.name).font(.title.bold()).multilineTextAlignment(.center)
-                Text(collection.artist ?? collection.source)
-                    .foregroundStyle(TuneStyle.muted)
+                Text(collection.artist ?? collection.source).foregroundStyle(TuneStyle.muted)
                 Text("\(collection.tracks.count) tracks · \(collection.source)")
                     .font(.caption).foregroundStyle(TuneStyle.muted)
                 if collection.tracks.isEmpty {
-                    Text("This link is saved. Track-list integration for this source is not available yet.")
-                        .foregroundStyle(TuneStyle.muted).multilineTextAlignment(.center)
-                        .padding(24)
+                    Text("No track list available for this collection.")
+                        .foregroundStyle(TuneStyle.muted).padding(24)
+                } else {
+                    Text("Tap a song to attach an audio file you own or a permitted direct download. Importing album metadata does not provide Apple Music audio.")
+                        .font(.footnote).foregroundStyle(TuneStyle.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 ForEach(Array(collection.tracks.enumerated()), id: \.element.id) { index, track in
-                    HStack(spacing: 14) {
-                        Text("\(index + 1)").font(.subheadline).foregroundStyle(TuneStyle.muted)
-                            .frame(width: 24)
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(track.title).font(.subheadline.bold())
-                            Text(track.artist).font(.caption).foregroundStyle(TuneStyle.muted)
-                        }
-                        Spacer()
-                        Text(track.duration > 0 ? String(format: "%d:%02d", track.duration / 60, track.duration % 60) : "")
-                            .font(.caption).foregroundStyle(TuneStyle.muted)
-                    }.padding(.vertical, 7)
+                    Button { selectedTrack = track } label: {
+                        HStack(spacing: 12) {
+                            Text("\(index + 1)").foregroundStyle(TuneStyle.muted).frame(width: 24)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(track.title).font(.subheadline.bold()).foregroundStyle(.white)
+                                Text(track.artist).font(.caption).foregroundStyle(TuneStyle.muted)
+                            }
+                            Spacer(minLength: 4)
+                            if store.fileForTrack(track) != nil {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            } else {
+                                Image(systemName: "arrow.down.circle").foregroundStyle(TuneStyle.accent)
+                            }
+                        }.frame(minHeight: 48).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
                     Divider().overlay(.white.opacity(0.06))
                 }
-                Text("Imported metadata does not grant rights to download streaming audio.")
-                    .font(.footnote).foregroundStyle(TuneStyle.muted).padding(.top, 12)
-            }.padding(22).frame(maxWidth: .infinity)
-        }.background(TuneStyle.background)
-            .navigationBarTitleDisplayMode(.inline)
+            }.padding(20).frame(maxWidth: .infinity)
+        }
+        .background(TuneStyle.background)
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(selectedTrack?.title ?? "Audio options",
+                            isPresented: Binding(get: { selectedTrack != nil },
+                                                 set: { if !$0 { selectedTrack = nil } }),
+                            titleVisibility: .visible) {
+            if let track = selectedTrack {
+                if let filename = store.fileForTrack(track) {
+                    Button("Play offline") {
+                        playingFile = SelectedAudio(name: filename)
+                        selectedTrack = nil
+                    }
+                }
+                Button("Choose audio file from Files") {
+                    showingFilePicker = true
+                }
+                Button("Download from authorized direct URL") {
+                    audioLink = ""
+                    showingURLSheet = true
+                }
+            }
+            Button("Cancel", role: .cancel) { selectedTrack = nil }
+        } message: {
+            Text("Apple Music catalog audio cannot be downloaded as a standalone file.")
+        }
+        .fileImporter(isPresented: $showingFilePicker, allowedContentTypes: [.audio]) { result in
+            if case .success(let url) = result, let track = selectedTrack {
+                store.importOwnedAudio(url, for: track)
+            } else if case .failure(let error) = result {
+                store.notice = error.localizedDescription
+            }
+            selectedTrack = nil
+        }
+        .sheet(isPresented: $showingURLSheet, onDismiss: { selectedTrack = nil }) {
+            NavigationStack {
+                Form {
+                    Text("Only use direct HTTPS audio files you have permission to download. Apple Music links and preview URLs are not downloadable audio.")
+                    TextField("https://example.com/song.flac", text: $audioLink)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    Button("Add to download queue") {
+                        if let track = selectedTrack {
+                            store.downloadAuthorizedAudio(audioLink, for: track)
+                        }
+                        showingURLSheet = false
+                    }
+                }
+                .navigationTitle("Download audio")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showingURLSheet = false }
+                    }
+                }
+            }.presentationDetents([.medium])
+        }
+        .sheet(item: $playingFile) { item in
+            LocalPlayer(url: store.localURL(for: item.name), title: item.name)
+        }
+        .alert("TamilTunes", isPresented: Binding(
+            get: { store.notice != nil },
+            set: { if !$0 { store.notice = nil } }
+        )) {
+            Button("OK", role: .cancel) { store.notice = nil }
+        } message: { Text(store.notice ?? "") }
     }
 }
 
