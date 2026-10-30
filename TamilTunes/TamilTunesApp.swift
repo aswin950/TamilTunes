@@ -28,6 +28,35 @@ struct MusicCollection: Identifiable, Codable {
     var artist: String? = nil
 }
 
+struct ArchiveSearch: Decodable {
+    let response: Response
+    struct Response: Decodable { let docs: [Item] }
+    struct Item: Decodable {
+        let identifier: String
+        let title: String?
+        let creator: [String]?
+        enum CodingKeys: String, CodingKey { case identifier, title, creator }
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            identifier = try container.decode(String.self, forKey: .identifier)
+            title = try? container.decode(String.self, forKey: .title)
+            if let array = try? container.decode([String].self, forKey: .creator) { creator = array }
+            else if let single = try? container.decode(String.self, forKey: .creator) { creator = [single] }
+            else { creator = nil }
+        }
+    }
+}
+struct ArchiveMetadata: Decodable {
+    let metadata: Metadata
+    let files: [File]
+    struct Metadata: Decodable { let licenseurl: String? }
+    struct File: Decodable {
+        let name: String
+        let privateFlag: String?
+        enum CodingKeys: String, CodingKey { case name; case privateFlag = "private" }
+    }
+}
+
 struct DownloadItem: Identifiable {
     let id: UUID
     let title: String
@@ -165,13 +194,67 @@ final class MusicStore: ObservableObject {
     func rememberedAudioSource(for track: LibraryTrack) -> String? {
         (UserDefaults.standard.dictionary(forKey: trackSourceKey) as? [String: String])?[track.id.uuidString]
     }
-    func quickDownload(_ track: LibraryTrack) {
+    func quickDownload(_ track: LibraryTrack) async {
         if fileForTrack(track) != nil {
             notice = "This song is already available offline."
-        } else if let source = rememberedAudioSource(for: track) {
+            return
+        }
+        if let source = rememberedAudioSource(for: track) {
             downloadAuthorizedAudio(source, for: track)
-        } else {
-            notice = "No authorized audio source is available for automatic download. Add a direct URL or an owned audio file first."
+            return
+        }
+        notice = "Searching Internet Archive for a licensed recording of \(track.title)…"
+        do {
+            let normalizedTitle = track.title.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedArtist = track.artist.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard normalizedTitle.count >= 3, normalizedArtist.count >= 2 else {
+                notice = "Not enough song metadata to identify an exact recording."
+                return
+            }
+            let escapedTitle = track.title.replacingOccurrences(of: "\"", with: "")
+            let escapedArtist = track.artist.replacingOccurrences(of: "\"", with: "")
+            var query = URLComponents(string: "https://archive.org/advancedsearch.php")!
+            query.queryItems = [
+                URLQueryItem(name: "q", value: "mediatype:audio AND title:\"\(escapedTitle)\" AND creator:\"\(escapedArtist)\" AND licenseurl:(*creativecommons.org* OR *publicdomain*)"),
+                URLQueryItem(name: "fl[]", value: "identifier"),
+                URLQueryItem(name: "fl[]", value: "title"),
+                URLQueryItem(name: "fl[]", value: "creator"),
+                URLQueryItem(name: "rows", value: "10"),
+                URLQueryItem(name: "output", value: "json")
+            ]
+            let (data, _) = try await URLSession.shared.data(from: query.url!)
+            let search = try JSONDecoder().decode(ArchiveSearch.self, from: data)
+            for item in search.response.docs {
+                guard item.title?.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                    .trimmingCharacters(in: .whitespacesAndNewlines) == normalizedTitle,
+                    item.creator?.contains(where: {
+                        $0.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+                            .trimmingCharacters(in: .whitespacesAndNewlines) == normalizedArtist
+                    }) == true else { continue }
+                let identifier = item.identifier
+                guard let safeID = identifier.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { continue }
+                let (metadataData, _) = try await URLSession.shared.data(from: URL(string: "https://archive.org/metadata/\(safeID)")!)
+                let metadata = try JSONDecoder().decode(ArchiveMetadata.self, from: metadataData)
+                guard let license = metadata.metadata.licenseurl?.lowercased(),
+                      license.contains("creativecommons.org/publicdomain/") ||
+                      license.contains("creativecommons.org/licenses/by/") ||
+                      license.contains("creativecommons.org/licenses/by-sa/") else { continue }
+                let files = metadata.files.filter { file in
+                    let name = file.name.lowercased()
+                    return ["mp3", "flac", "m4a", "ogg", "wav"].contains(URL(fileURLWithPath: name).pathExtension)
+                        && file.privateFlag != "true"
+                }
+                guard files.count == 1, let file = files.first,
+                      let encodedName = file.name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { continue }
+                downloadAuthorizedAudio("https://archive.org/download/\(safeID)/\(encodedName)", for: track)
+                notice = "Found an exact-title and artist match with an open license. Download queued from Internet Archive."
+                return
+            }
+            notice = "No confidently matched, openly licensed audio found on Internet Archive. Try Files or a direct URL."
+        } catch {
+            notice = "Audio source search failed: \(error.localizedDescription)"
         }
     }
     private let trackFileKey = "TamilTunes.trackFiles.v1"
@@ -906,7 +989,7 @@ struct CollectionPage: View {
                     }
                 }
                 Button("Download") {
-                    store.quickDownload(track)
+                    Task { await store.quickDownload(track) }
                     selectedTrack = nil
                 }
                 Button("Choose audio file from Files") {
