@@ -28,6 +28,45 @@ struct MusicCollection: Identifiable, Codable {
     var artist: String? = nil
 }
 
+struct PipedSearchResponse: Decodable {
+    let items: [PipedSearchItem]
+}
+struct PipedSearchItem: Decodable {
+    let url: String?
+    let title: String?
+    let uploaderName: String?
+    let type: String?
+}
+@MainActor
+final class PipedDiscovery: ObservableObject {
+    @Published var results: [PipedSearchItem] = []
+    @Published var loading = false
+    @Published var error: String?
+    // Public instances are community operated and may be unavailable.
+    private let instance = "https://pipedapi.kavin.rocks"
+    func search(_ track: LibraryTrack) async {
+        loading = true
+        error = nil
+        results = []
+        defer { loading = false }
+        var components = URLComponents(string: instance + "/search")!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: "\(track.title) \(track.artist) official audio"),
+            URLQueryItem(name: "filter", value: "videos")
+        ]
+        do {
+            let (data, response) = try await URLSession.shared.data(from: components.url!)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                error = "Piped instance unavailable. Try again later."
+                return
+            }
+            let decoded = try JSONDecoder().decode(PipedSearchResponse.self, from: data)
+            results = decoded.items.filter { $0.url?.hasPrefix("/watch?v=") == true }.prefix(12).map { $0 }
+            if results.isEmpty { error = "No matching videos found on this Piped instance." }
+        } catch { error = "Piped search unavailable: \(error.localizedDescription)" }
+    }
+}
+
 struct ArchiveSearch: Decodable {
     let response: Response
     struct Response: Decodable { let docs: [Item] }
@@ -941,6 +980,8 @@ struct CollectionPage: View {
     @State private var showingURLSheet = false
     @State private var audioLink = ""
     @State private var playingFile: SelectedAudio?
+    @State private var discoveryTrack: LibraryTrack?
+    @StateObject private var piped = PipedDiscovery()
 
     var body: some View {
         ScrollView {
@@ -992,6 +1033,11 @@ struct CollectionPage: View {
                     Task { await store.quickDownload(track) }
                     selectedTrack = nil
                 }
+                Button("Find on Piped") {
+                    discoveryTrack = track
+                    selectedTrack = nil
+                    Task { await piped.search(track) }
+                }
                 Button("Choose audio file from Files") {
                     showingFilePicker = true
                 }
@@ -1003,6 +1049,33 @@ struct CollectionPage: View {
             Button("Cancel", role: .cancel) { selectedTrack = nil }
         } message: {
             Text("Apple Music catalog audio cannot be downloaded as a standalone file.")
+        }
+        .sheet(item: $discoveryTrack) { track in
+            NavigationStack {
+                List {
+                    Text("Piped searches YouTube videos for this song. These results are for discovery and supported YouTube playback, not downloadable audio.")
+                        .font(.footnote)
+                    if piped.loading { ProgressView("Searching Piped…") }
+                    if let error = piped.error { Text(error).foregroundStyle(.secondary) }
+                    ForEach(Array(piped.results.enumerated()), id: \.offset) { _, item in
+                        if let path = item.url,
+                           let url = URL(string: "https://www.youtube.com" + path) {
+                            Link(destination: url) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(item.title ?? "YouTube video")
+                                    Text(item.uploaderName ?? "YouTube").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("Find on Piped")
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { discoveryTrack = nil }
+                    }
+                }
+            }
         }
         .fileImporter(isPresented: $showingFilePicker, allowedContentTypes: [.audio]) { result in
             if case .success(let url) = result, let track = selectedTrack {
