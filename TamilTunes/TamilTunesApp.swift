@@ -28,6 +28,14 @@ struct MusicCollection: Identifiable, Codable {
     var artist: String? = nil
 }
 
+struct PipedStreams: Decodable {
+    let audioStreams: [AudioStream]
+    struct AudioStream: Decodable {
+        let url: String
+        let mimeType: String?
+        let bitrate: Int?
+    }
+}
 struct PipedSearchResponse: Decodable {
     let items: [PipedSearchItem]
 }
@@ -238,62 +246,75 @@ final class MusicStore: ObservableObject {
             notice = "This song is already available offline."
             return
         }
-        if let source = rememberedAudioSource(for: track) {
-            downloadAuthorizedAudio(source, for: track)
-            return
-        }
-        notice = "Searching Internet Archive for a licensed recording of \(track.title)…"
+        notice = "Searching Piped for \(track.title)…"
         do {
-            let normalizedTitle = track.title.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let normalizedArtist = track.artist.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard normalizedTitle.count >= 3, normalizedArtist.count >= 2 else {
-                notice = "Not enough song metadata to identify an exact recording."
-                return
-            }
-            let escapedTitle = track.title.replacingOccurrences(of: "\"", with: "")
-            let escapedArtist = track.artist.replacingOccurrences(of: "\"", with: "")
-            var query = URLComponents(string: "https://archive.org/advancedsearch.php")!
+            var query = URLComponents(string: "https://pipedapi.kavin.rocks/search")!
             query.queryItems = [
-                URLQueryItem(name: "q", value: "mediatype:audio AND title:\"\(escapedTitle)\" AND creator:\"\(escapedArtist)\" AND licenseurl:(*creativecommons.org* OR *publicdomain*)"),
-                URLQueryItem(name: "fl[]", value: "identifier"),
-                URLQueryItem(name: "fl[]", value: "title"),
-                URLQueryItem(name: "fl[]", value: "creator"),
-                URLQueryItem(name: "rows", value: "10"),
-                URLQueryItem(name: "output", value: "json")
+                URLQueryItem(name: "q", value: "\(track.title) \(track.artist) official audio"),
+                URLQueryItem(name: "filter", value: "videos")
             ]
-            let (data, _) = try await URLSession.shared.data(from: query.url!)
-            let search = try JSONDecoder().decode(ArchiveSearch.self, from: data)
-            for item in search.response.docs {
-                guard item.title?.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-                    .trimmingCharacters(in: .whitespacesAndNewlines) == normalizedTitle,
-                    item.creator?.contains(where: {
-                        $0.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-                            .trimmingCharacters(in: .whitespacesAndNewlines) == normalizedArtist
-                    }) == true else { continue }
-                let identifier = item.identifier
-                guard let safeID = identifier.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { continue }
-                let (metadataData, _) = try await URLSession.shared.data(from: URL(string: "https://archive.org/metadata/\(safeID)")!)
-                let metadata = try JSONDecoder().decode(ArchiveMetadata.self, from: metadataData)
-                guard let license = metadata.metadata.licenseurl?.lowercased(),
-                      license.contains("creativecommons.org/publicdomain/") ||
-                      license.contains("creativecommons.org/licenses/by/") ||
-                      license.contains("creativecommons.org/licenses/by-sa/") else { continue }
-                let files = metadata.files.filter { file in
-                    let name = file.name.lowercased()
-                    return ["mp3", "flac", "m4a", "ogg", "wav"].contains(URL(fileURLWithPath: name).pathExtension)
-                        && file.privateFlag != "true"
-                }
-                guard files.count == 1, let file = files.first,
-                      let encodedName = file.name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { continue }
-                downloadAuthorizedAudio("https://archive.org/download/\(safeID)/\(encodedName)", for: track)
-                notice = "Found an exact-title and artist match with an open license. Download queued from Internet Archive."
+            let (searchData, searchResponse) = try await URLSession.shared.data(from: query.url!)
+            guard (searchResponse as? HTTPURLResponse)?.statusCode == 200 else {
+                notice = "Piped search is unavailable."
                 return
             }
-            notice = "No confidently matched, openly licensed audio found on Internet Archive. Try Files or a direct URL."
+            let results = try JSONDecoder().decode(PipedSearchResponse.self, from: searchData)
+            let titleWords = Set(track.title.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init).filter { $0.count > 2 })
+            let artistWords = Set(track.artist.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init).filter { $0.count > 2 })
+            let candidates = results.items.filter { item in
+                guard item.url?.hasPrefix("/watch?v=") == true, let name = item.title?.lowercased() else { return false }
+                let words = Set(name.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+                return !titleWords.isEmpty && titleWords.isSubset(of: words) &&
+                    (artistWords.isEmpty || !artistWords.isDisjoint(with: words) ||
+                     artistWords.contains(where: { item.uploaderName?.lowercased().contains($0) == true }))
+            }
+            guard candidates.count == 1, let path = candidates.first?.url,
+                  let videoID = URLComponents(string: "https://www.youtube.com" + path)?.queryItems?.first(where: { $0.name == "v" })?.value,
+                  !videoID.isEmpty else {
+                notice = candidates.isEmpty ? "No confident Piped match found. Try Files or a direct URL." : "Multiple possible matches found. Choose a specific recording using Find on Piped."
+                return
+            }
+            let identity = "piped-video:" + videoID
+            if let existing = readIndex()[identity],
+               FileManager.default.fileExists(atPath: localURL(for: existing).path) {
+                linkTrack(track, filename: existing)
+                notice = "Linked existing offline recording."
+                return
+            }
+            let streamURL = URL(string: "https://pipedapi.kavin.rocks/streams/\(videoID)")!
+            let (streamData, streamResponse) = try await URLSession.shared.data(from: streamURL)
+            guard (streamResponse as? HTTPURLResponse)?.statusCode == 200 else {
+                notice = "Piped could not provide audio streams."
+                return
+            }
+            let streams = try JSONDecoder().decode(PipedStreams.self, from: streamData)
+            let supported = streams.audioStreams.filter { stream in
+                let format = (stream.mimeType ?? "").lowercased()
+                return format.contains("audio/mp4") || format.contains("audio/mpeg") || format.contains("audio/aac")
+            }
+            guard let best = supported.max(by: { ($0.bitrate ?? 0) < ($1.bitrate ?? 0) }),
+                  let url = URL(string: best.url), url.scheme == "https" else {
+                notice = "No iPhone-compatible audio stream found."
+                return
+            }
+            notice = "Downloading highest-bitrate compatible audio for \(track.title)…"
+            let (temporary, response) = try await URLSession.shared.download(from: url)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  response.mimeType?.hasPrefix("audio/") == true || response.mimeType == "application/octet-stream" else {
+                notice = "The Piped audio stream was unavailable or expired."
+                return
+            }
+            let ext = best.mimeType?.lowercased().contains("mpeg") == true ? "mp3" : "m4a"
+            let filename = UUID().uuidString + "." + ext
+            try FileManager.default.moveItem(at: temporary, to: localURL(for: filename))
+            var index = readIndex()
+            index[identity] = filename
+            writeIndex(index)
+            linkTrack(track, filename: filename)
+            refreshFiles()
+            notice = "Downloaded \(track.title) for offline playback."
         } catch {
-            notice = "Audio source search failed: \(error.localizedDescription)"
+            notice = "Piped download failed: \(error.localizedDescription)"
         }
     }
     private let trackFileKey = "TamilTunes.trackFiles.v1"
